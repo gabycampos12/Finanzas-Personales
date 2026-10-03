@@ -63,3 +63,17 @@ export interface RecurringBill {
   note?: string;
 }
 
+export interface SavingsGoal {
+  id: string;
+  name: string; // Nombre de la meta (ej: "Fondo de emergencia", "Viaje a Japón")
+  targetAmount: number; // Monto objetivo en USD
+  currentAmount: number; // Monto ahorrado actual en USD
+  targetDate?: string; // YYYY-MM-DD (fecha estimada o límite)
+  icon?: string; // Emoji representativo
+  color?: string; // Color distintivo hex
+  accountId?: string; // Cuenta donde se custodia el ahorro (opcional)
+  note?: string; // Nota o motivación
+  createdAt: number;
+}
+
+

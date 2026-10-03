@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { User } from 'firebase/auth';
-import { Account, Category, Movement, MovementType, RecurringBill } from './types';
-import { DEFAULT_ACCOUNTS, DEFAULT_BILLS, DEFAULT_CATEGORIES, INITIAL_MOVEMENTS } from './data/initialData';
+import { Account, Category, Movement, MovementType, RecurringBill, SavingsGoal } from './types';
+import {
+  DEFAULT_ACCOUNTS,
+  DEFAULT_BILLS,
+  DEFAULT_CATEGORIES,
+  DEFAULT_SAVINGS_GOALS,
+  INITIAL_MOVEMENTS,
+} from './data/initialData';
 import { initAuth } from './services/firebaseAuth';
 import { Navbar } from './components/Navbar';
 import { MonthSummary } from './components/MonthSummary';
@@ -11,18 +17,34 @@ import { BudgetList } from './components/BudgetList';
 import { BillsSection } from './components/BillsSection';
 import { AccountsSection } from './components/AccountsSection';
 import { MovementsList } from './components/MovementsList';
+import { SavingsGoalsSection } from './components/SavingsGoalsSection';
 import { QuickAddModal } from './components/QuickAddModal';
 import { CategoriesManagerModal } from './components/CategoriesManagerModal';
 import { GoogleSheetsModal } from './components/GoogleSheetsModal';
 import { SupabaseModal } from './components/SupabaseModal';
 import { ConfirmationDialog } from './components/ConfirmationDialog';
+import { TabsNavigation, TabType } from './components/TabsNavigation';
 import { exportAllDataToExcelCsv } from './utils/exportToExcel';
-import { ArrowDownLeft, ArrowUpRight, Plus } from 'lucide-react';
+import { formatCurrency, getMonthLabel } from './utils/formatters';
+import {
+  ArrowDownLeft,
+  ArrowLeftRight,
+  ArrowUpRight,
+  CalendarClock,
+  ChevronRight,
+  PiggyBank,
+  Plus,
+  Sliders,
+  Target,
+  Wallet,
+} from 'lucide-react';
 
 const STORAGE_KEY_MOVEMENTS = 'fp_movements_usd_v3';
 const STORAGE_KEY_CATEGORIES = 'fp_categories_usd_v3';
 const STORAGE_KEY_ACCOUNTS = 'fp_accounts_usd_v4';
 const STORAGE_KEY_BILLS = 'fp_bills_usd_v1';
+const STORAGE_KEY_SAVINGS_GOALS = 'fp_savings_goals_usd_v1';
+const STORAGE_KEY_ACTIVE_TAB = 'fp_active_tab_v2';
 
 export default function App() {
   // Load state from localStorage or use initial rich sample data in USD
@@ -110,6 +132,16 @@ export default function App() {
     return DEFAULT_BILLS;
   });
 
+  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_SAVINGS_GOALS);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.error(e);
+    }
+    return DEFAULT_SAVINGS_GOALS;
+  });
+
   // Current month being inspected (defaults to today's month, e.g. "2026-09")
   const todayMonth = useMemo(() => {
     const now = new Date();
@@ -119,6 +151,30 @@ export default function App() {
   }, []);
 
   const [currentMonth, setCurrentMonth] = useState<string>(todayMonth);
+
+  // Active navigation tab
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_ACTIVE_TAB);
+      if (
+        saved &&
+        ['dashboard', 'movements', 'accounts', 'budgets', 'savings', 'bills'].includes(saved)
+      ) {
+        return saved as TabType;
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    return 'dashboard';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_ACTIVE_TAB, activeTab);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [activeTab]);
 
   // Auth state for Google Sheets
   const [user, setUser] = useState<User | null>(null);
@@ -175,6 +231,14 @@ export default function App() {
     }
   }, [bills]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_SAVINGS_GOALS, JSON.stringify(savingsGoals));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [savingsGoals]);
+
   // Auth listener
   useEffect(() => {
     const unsubscribe = initAuth((currentUser) => {
@@ -215,6 +279,58 @@ export default function App() {
       return { ...acc, balance };
     });
   }, [accounts, movements]);
+
+  // Computed badge numbers and stats for tabs and dashboard hub
+  const movementsInMonthCount = useMemo(() => {
+    return movements.filter((m) => m.date.startsWith(currentMonth)).length;
+  }, [movements, currentMonth]);
+
+  const totalCapitalBalance = useMemo(() => {
+    return accountsWithBalances.reduce((sum, acc) => sum + acc.balance, 0);
+  }, [accountsWithBalances]);
+
+  const totalSavedInGoals = useMemo(() => {
+    return savingsGoals.reduce((sum, g) => sum + g.currentAmount, 0);
+  }, [savingsGoals]);
+
+  const activeSavingsGoalsCount = useMemo(() => {
+    return savingsGoals.filter((g) => g.currentAmount < g.targetAmount).length || savingsGoals.length;
+  }, [savingsGoals]);
+
+  const urgentBillsCount = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return bills.filter((b) => {
+      if (!b.dueDate) return false;
+      const [y, m, d] = b.dueDate.split('-').map(Number);
+      const due = new Date(y, m - 1, d);
+      due.setHours(0, 0, 0, 0);
+      const diffDays = Math.ceil((due.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+      return diffDays <= 5;
+    }).length;
+  }, [bills]);
+
+  const { budgetedCategoriesCount, exceededBudgetsCount } = useMemo(() => {
+    const expenseCategories = categories.filter((c) => c.type !== 'income');
+    let budgeted = 0;
+    let exceeded = 0;
+    expenseCategories.forEach((cat) => {
+      const budget = cat.monthlyBudget || 0;
+      if (budget > 0) {
+        budgeted++;
+        const spent = movements
+          .filter(
+            (m) =>
+              m.type === 'expense' &&
+              m.category === cat.name &&
+              m.date.startsWith(currentMonth)
+          )
+          .reduce((sum, m) => sum + m.amount, 0);
+        if (spent > budget) exceeded++;
+      }
+    });
+    return { budgetedCategoriesCount: budgeted, exceededBudgetsCount: exceeded };
+  }, [categories, movements, currentMonth]);
 
   // --- Handlers ---
   const handleOpenAdd = (type: MovementType) => {
@@ -362,11 +478,44 @@ export default function App() {
     });
   };
 
+  // --- Handlers para Metas de Ahorro ---
+  const handleAddSavingsGoal = (newGoal: Omit<SavingsGoal, 'id' | 'createdAt'>) => {
+    const goal: SavingsGoal = {
+      ...newGoal,
+      id: `goal-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      createdAt: Date.now(),
+    };
+    setSavingsGoals((prev) => [goal, ...prev]);
+  };
+
+  const handleUpdateSavingsGoal = (id: string, updates: Partial<SavingsGoal>) => {
+    setSavingsGoals((prev) => prev.map((g) => (g.id === id ? { ...g, ...updates } : g)));
+  };
+
+  const handleDeleteSavingsGoal = (id: string) => {
+    setSavingsGoals((prev) => prev.filter((g) => g.id !== id));
+  };
+
+  const handleDepositToSavingsGoal = (goalId: string, amount: number) => {
+    setSavingsGoals((prev) =>
+      prev.map((g) => (g.id === goalId ? { ...g, currentAmount: g.currentAmount + amount } : g))
+    );
+  };
+
+  const handleWithdrawFromSavingsGoal = (goalId: string, amount: number) => {
+    setSavingsGoals((prev) =>
+      prev.map((g) =>
+        g.id === goalId ? { ...g, currentAmount: Math.max(0, g.currentAmount - amount) } : g
+      )
+    );
+  };
+
   const handleResetAllData = () => {
     setMovements([]);
     setCategories(DEFAULT_CATEGORIES);
     setAccounts(DEFAULT_ACCOUNTS.map((a) => ({ ...a, initialBalance: 0 })));
     setBills(DEFAULT_BILLS);
+    setSavingsGoals([]);
     setIsResetConfirmOpen(false);
   };
 
@@ -376,13 +525,14 @@ export default function App() {
       accounts,
       categories,
       bills,
+      savingsGoals,
     });
   };
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 pb-24">
-      {/* Contenedor central vertical mobile-primero plano */}
-      <div className="mx-auto max-w-2xl bg-white min-h-screen border-x border-slate-200">
+    <div className="min-h-screen bg-slate-100 text-slate-900 pb-12">
+      {/* Contenedor central vertical con ancho óptimo para pestañas y paneles */}
+      <div className="mx-auto max-w-3xl bg-white min-h-screen border-x border-slate-200">
         {/* Encabezado */}
         <Navbar
           user={user}
@@ -393,8 +543,19 @@ export default function App() {
           onOpenCategories={() => handleOpenCategoriesManager('expense')}
         />
 
-        {/* 1. Botones de acción rápida superiores */}
-        <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50/60 p-3">
+        {/* Barra de pestañas fijas por sección */}
+        <TabsNavigation
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          movementsCount={movementsInMonthCount}
+          accountsCount={accounts.length}
+          urgentBillsCount={urgentBillsCount}
+          exceededBudgetsCount={exceededBudgetsCount}
+          savingsGoalsCount={activeSavingsGoalsCount}
+        />
+
+        {/* Botones de acción rápida superiores únicos y accesibles en todas las vistas */}
+        <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50/70 p-3">
           <button
             id="btn-quick-add-expense-top"
             type="button"
@@ -415,89 +576,238 @@ export default function App() {
           </button>
         </div>
 
-        {/* 2. Resumen del mes arriba de todo con el número protagonista */}
-        <MonthSummary
-          currentMonth={currentMonth}
-          onMonthChange={setCurrentMonth}
-          income={monthIncome}
-          expenses={monthExpenses}
-          todayMonth={todayMonth}
-        />
+        {/* CONTENIDO SEGÚN LA PESTAÑA SELECCIONADA */}
+        <main id="main-tab-content">
+          {activeTab === 'dashboard' && (
+            <div id="panel-dashboard" role="tabpanel" aria-labelledby="tab-btn-dashboard" className="space-y-0">
+              {/* Resumen del mes */}
+              <MonthSummary
+                currentMonth={currentMonth}
+                onMonthChange={setCurrentMonth}
+                income={monthIncome}
+                expenses={monthExpenses}
+                todayMonth={todayMonth}
+              />
 
-        {/* 3. Gráfico de dona con reparto de gastos por categoría (ordenado de mayor a menor, <5% en Otros) */}
-        <DonutChart
-          movements={movements}
-          categories={categories}
-          currentMonth={currentMonth}
-        />
+              {/* Gráfico de dona con reparto de gastos por categoría */}
+              <DonutChart
+                movements={movements}
+                categories={categories}
+                currentMonth={currentMonth}
+              />
 
-        {/* 4. Gráfico de barras con los últimos 6 meses */}
-        <BarChart6Months
-          movements={movements}
-          currentMonth={currentMonth}
-          onSelectMonth={setCurrentMonth}
-        />
+              {/* Gráfico de barras con los últimos 6 meses */}
+              <BarChart6Months
+                movements={movements}
+                currentMonth={currentMonth}
+                onSelectMonth={setCurrentMonth}
+              />
 
-        {/* 1. Cuentas y Saldos + Transferencias + Edición de Cuentas */}
-        <AccountsSection
-          accounts={accounts}
-          movements={movements}
-          onTransfer={handleTransfer}
-          onUpdateAccount={handleUpdateAccount}
-          onAddAccount={handleAddAccount}
-          onDeleteAccount={handleDeleteAccount}
-        />
+              {/* Tarjetas de acceso rápido a las otras secciones */}
+              <div className="p-4 bg-slate-50/60 border-t border-slate-200">
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    Acceso directo a secciones
+                  </h3>
+                  <span className="text-[11px] text-slate-400">Todo a 1 clic sin scrollear</span>
+                </div>
 
-        {/* 2. Sección de Facturas y Pagos del Mes (vencimientos, días restantes, último pago) */}
-        <BillsSection
-          bills={bills}
-          categories={categories}
-          onAddBill={handleAddBill}
-          onUpdateBill={handleUpdateBill}
-          onDeleteBill={handleDeleteBill}
-          onMarkAsPaid={handleMarkBillAsPaid}
-        />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {/* Ir a Movimientos */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('movements')}
+                    className="flex items-center justify-between p-3 rounded-xl bg-white border border-slate-200 hover:border-slate-300 hover:shadow-2xs transition-all text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-9 w-9 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center shrink-0">
+                        <ArrowLeftRight className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
+                          Movimientos
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {movementsInMonthCount} registros en {getMonthLabel(currentMonth)}
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
+                  </button>
 
-        {/* 3. Presupuesto opcional por categoría (la barra cambia de color cuando te pasás) */}
-        <BudgetList
-          categories={categories}
-          movements={movements}
-          currentMonth={currentMonth}
-          onUpdateCategoryBudget={handleUpdateCategoryBudget}
-          onOpenCategoriesManager={() => handleOpenCategoriesManager('expense')}
-        />
+                  {/* Ir a Cuentas */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('accounts')}
+                    className="flex items-center justify-between p-3 rounded-xl bg-white border border-slate-200 hover:border-slate-300 hover:shadow-2xs transition-all text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-9 w-9 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
+                        <Wallet className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-900 group-hover:text-emerald-600 transition-colors">
+                          Cuentas y Saldos
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          Total: <strong className="text-slate-700">{formatCurrency(totalCapitalBalance)}</strong> ({accounts.length} cuentas)
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
+                  </button>
 
-        {/* 4. Lista de movimientos filtrable, con editar y borrar */}
-        <MovementsList
-          movements={movements}
-          categories={categories}
-          accounts={accounts}
-          currentMonth={currentMonth}
-          onEdit={handleEditMovement}
-          onDelete={(mov) => setDeleteConfirmMovement(mov)}
-        />
-      </div>
+                  {/* Ir a Presupuestos */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('budgets')}
+                    className="flex items-center justify-between p-3 rounded-xl bg-white border border-slate-200 hover:border-slate-300 hover:shadow-2xs transition-all text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 ${
+                        exceededBudgetsCount > 0 ? 'bg-amber-50 text-amber-600' : 'bg-purple-50 text-purple-600'
+                      }`}>
+                        <Sliders className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-900 group-hover:text-purple-600 transition-colors">
+                          Presupuestos
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {exceededBudgetsCount > 0 ? (
+                            <span className="text-amber-600 font-semibold">{exceededBudgetsCount} límite(s) excedido(s)</span>
+                          ) : (
+                            `${budgetedCategoriesCount} categorías con presupuesto`
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
+                  </button>
 
-      {/* Botón flotante móvil para cargar en menos de 5 segundos */}
-      <div className="fixed bottom-4 left-0 right-0 z-40 mx-auto flex max-w-sm items-center justify-center gap-3 px-4">
-        <button
-          id="btn-fab-expense"
-          type="button"
-          onClick={() => handleOpenAdd('expense')}
-          className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-slate-900 py-3.5 text-sm font-bold text-white shadow-none transition-transform hover:scale-[1.02] active:scale-[0.98]"
-        >
-          <Plus className="h-4 w-4 text-red-400" />
-          <span>Gasto rápido</span>
-        </button>
-        <button
-          id="btn-fab-income"
-          type="button"
-          onClick={() => handleOpenAdd('income')}
-          className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-emerald-400 bg-emerald-600 py-3.5 text-sm font-bold text-white shadow-none transition-transform hover:scale-[1.02] active:scale-[0.98]"
-        >
-          <Plus className="h-4 w-4" />
-          <span>Ingreso rápido</span>
-        </button>
+                  {/* Ir a Metas de Ahorro */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('savings')}
+                    className="flex items-center justify-between p-3 rounded-xl bg-white border border-slate-200 hover:border-slate-300 hover:shadow-2xs transition-all text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="h-9 w-9 rounded-lg bg-teal-50 text-teal-600 flex items-center justify-center shrink-0">
+                        <PiggyBank className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-900 group-hover:text-teal-600 transition-colors">
+                          Metas de Ahorro
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {savingsGoals.length} metas · Ahorrado: <strong className="text-slate-700">{formatCurrency(totalSavedInGoals)}</strong>
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
+                  </button>
+
+                  {/* Ir a Facturas */}
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('bills')}
+                    className="flex items-center justify-between p-3 rounded-xl bg-white border border-slate-200 hover:border-slate-300 hover:shadow-2xs transition-all text-left group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 ${
+                        urgentBillsCount > 0 ? 'bg-orange-50 text-orange-600' : 'bg-slate-100 text-slate-700'
+                      }`}>
+                        <CalendarClock className="h-4 w-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-bold text-slate-900 group-hover:text-orange-600 transition-colors">
+                          Vencimientos y Facturas
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          {urgentBillsCount > 0 ? (
+                            <span className="text-orange-600 font-semibold">{urgentBillsCount} factura(s) por vencer</span>
+                          ) : (
+                            `${bills.length} pagos recurrentes al día`
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <ChevronRight className="h-4 w-4 text-slate-400 group-hover:translate-x-0.5 transition-transform" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'movements' && (
+            <div id="panel-movements" role="tabpanel" aria-labelledby="tab-btn-movements">
+              <MovementsList
+                movements={movements}
+                categories={categories}
+                accounts={accounts}
+                currentMonth={currentMonth}
+                onEdit={handleEditMovement}
+                onDelete={(mov) => setDeleteConfirmMovement(mov)}
+                onExportExcel={handleExportExcel}
+              />
+            </div>
+          )}
+
+          {activeTab === 'accounts' && (
+            <div id="panel-accounts" role="tabpanel" aria-labelledby="tab-btn-accounts">
+              <AccountsSection
+                accounts={accounts}
+                movements={movements}
+                onTransfer={handleTransfer}
+                onUpdateAccount={handleUpdateAccount}
+                onAddAccount={handleAddAccount}
+                onDeleteAccount={handleDeleteAccount}
+              />
+            </div>
+          )}
+
+          {activeTab === 'budgets' && (
+            <div id="panel-budgets" role="tabpanel" aria-labelledby="tab-btn-budgets">
+              <BudgetList
+                categories={categories}
+                movements={movements}
+                currentMonth={currentMonth}
+                onUpdateCategoryBudget={handleUpdateCategoryBudget}
+                onOpenCategoriesManager={() => handleOpenCategoriesManager('expense')}
+                onUpdateCategory={handleUpdateCategory}
+                onDeleteCategory={handleDeleteCategory}
+                onAddCategory={handleAddCategory}
+              />
+            </div>
+          )}
+
+          {activeTab === 'savings' && (
+            <div id="panel-savings" role="tabpanel" aria-labelledby="tab-btn-savings">
+              <SavingsGoalsSection
+                goals={savingsGoals}
+                accounts={accounts}
+                onAddGoal={handleAddSavingsGoal}
+                onUpdateGoal={handleUpdateSavingsGoal}
+                onDeleteGoal={handleDeleteSavingsGoal}
+                onDepositToGoal={handleDepositToSavingsGoal}
+                onWithdrawFromGoal={handleWithdrawFromSavingsGoal}
+              />
+            </div>
+          )}
+
+          {activeTab === 'bills' && (
+            <div id="panel-bills" role="tabpanel" aria-labelledby="tab-btn-bills">
+              <BillsSection
+                bills={bills}
+                categories={categories}
+                onAddBill={handleAddBill}
+                onUpdateBill={handleUpdateBill}
+                onDeleteBill={handleDeleteBill}
+                onMarkAsPaid={handleMarkBillAsPaid}
+              />
+            </div>
+          )}
+        </main>
       </div>
 
       {/* Modal de Carga Rápida / Edición */}
