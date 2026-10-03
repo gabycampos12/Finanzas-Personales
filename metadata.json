@@ -1,6 +1,0 @@
-{
-  "name": "Finanzas Personales",
-  "description": "Planilla de finanzas personales en español venezolano con registro rápido de gastos e ingresos, resumen mensual, presupuestos, saldos de cuentas, facturas y pagos del mes, y sincronización con Google Sheets.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
